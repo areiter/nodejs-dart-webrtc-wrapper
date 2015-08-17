@@ -10,9 +10,9 @@ node bin/server 6600
 In dart create an instance of the WebRtcFactoryNodeJs wih rtcConfiguration and mediaConstraints as described in the specification
 
 ```dart
-var factory = new WebRtcFactoryNodeJs();
+var f = new WebRtcFactoryNodeJs();
 
-factory.createRtcPeerConnection(rtcConfiguration, mediaConstraints)
+f.createRtcPeerConnection(rtcConfiguration, mediaConstraints)
 .then((RtcPeerConnection pc){
  ...
 });
