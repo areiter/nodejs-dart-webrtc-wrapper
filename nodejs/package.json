@@ -1,0 +1,10 @@
+{
+  "name": "nodejs-dart-webrtc-wrapper",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "wrtc": "~0.0.55",
+    "uuid": "~2.0.1",
+    "btoa": "~1.1.2"
+  }
+}

@@ -1,0 +1,354 @@
+#!/usr/bin/env node
+
+/**
+ * Module dependencies.
+ */
+var net = require('net');
+var webrtc = require('wrtc');
+var uuid = require('uuid');
+var btoa = require('btoa');
+
+
+var port = parseInt(process.argv[2]);
+
+console.log('Starting server at ' + process.argv[2]);
+var server = net.createServer(function(socket){
+    socket.on("data", function(data){
+        console.log("server received: " + data );
+        try {
+//data.toString().split("\n\n").forEach(function(entry){
+//console.log(entry);
+//});
+	    data.toString().split("\n\n").forEach(function(d){
+//	      console.log(d);
+	      if(d == '') return;
+              var msg = JSON.parse(d);
+              dispatcher(msg, socket);
+	    });
+        } catch(ex){
+            console.log(ex);
+        }
+
+    });
+
+
+    socket.on('error', function(e){
+        console.log('ON ERROR');
+        console.log(e);
+    });
+});
+
+
+server.listen(port);
+
+var objectStore = {};
+
+function send(data, socket){
+ try {
+    socket.write(JSON.stringify(data) + '\n\n');
+ } catch(ex){
+            console.log(ex);
+        }
+
+}
+
+function dispatcher(msg, socket){
+    if(msg['type'] == "createObject"){
+        dispatcher_createObject(msg, socket);
+    } else if(msg['type'] == "callMethod"){
+        dispatcher_callMethod(msg, socket);
+    }
+}
+
+function dispatcher_createObject(msg, socket){
+    if(msg['objType'] === 'RtcPeerConnection'){
+        var pc = new webrtc.RTCPeerConnection(msg['args'][0]);
+        attachPeerConnectionEvents(msg['objectId'], pc, socket);
+        console.log("created RTCPeerConnection(" + msg['objectId'] + ") with settings: " + JSON.stringify(msg['args'][0]));
+        objectStore[msg['objectId']] = pc;
+        var args = {
+            'signalingState': pc.signalingState,
+            'iceConnectionState': pc.iceConnectionState,
+            'iceGatheringState': pc.iceGatheringState
+        };
+        send({
+            'type':'rCreateObject',
+            'callId':msg['callId'],
+            'objectId':msg['objectId'],
+            'args':args
+        }, socket);
+    }
+}
+
+function dispatcher_callMethod(msg, socket){
+    var o;
+    if(msg['method'] === 'RtcPeerConnection:createOffer'){
+        o = objectStore[msg['objectId']];
+        o.createOffer(function (offer){
+            console.log("RtcPeerConnection:createOffer: success " + JSON.stringify(sessionDescriptionToMap(offer)));
+            send({
+                'type':'rCallMethod',
+                'callId':msg['callId'],
+                'objectId':msg['objectId'],
+                'result': sessionDescriptionToMap(offer)
+            }, socket);
+        }, function(error){
+            console.log("RtcPeerConnection:createOffer: error " + error);
+        }, {});
+    } else if(msg['method'] === 'RtcPeerConnection:createAnswer'){
+        o = objectStore[msg['objectId']];
+        o.createAnswer(function (answer){
+            console.log("RtcPeerConnection:createAnswer: success " + JSON.stringify(sessionDescriptionToMap(answer)));
+            send({
+                'type':'rCallMethod',
+                'callId':msg['callId'],
+                'objectId':msg['objectId'],
+                'result': sessionDescriptionToMap(answer)
+            }, socket);
+        }, function(error){
+            console.log("RtcPeerConnection:createAnswer: error " + error);
+        }, {});
+    } else if(msg['method'] === 'RtcPeerConnection:close'){
+        o = objectStore[msg['objectId']];
+        console.log("RtcPeerConnection:close");
+        o.close();
+        send({
+            'type':'rCallMethod',
+            'callId':msg['callId'],
+            'objectId':msg['objectId'],
+            'result': sessionDescriptionToMap(offer),
+            'action':'removeReference'
+        }, socket);
+    }else if(msg['method'] === 'RtcPeerConnection:addIceCandidate'){
+        o = objectStore[msg['objectId']];
+        var candidate = new webrtc.RTCIceCandidate(msg['args'][0]);
+        o.addIceCandidate(candidate, function(){
+            send({
+                'type':'rCallMethod',
+                'callId':msg['callId'],
+                'objectId':msg['objectId']
+            }, socket);
+        }, function(error){
+            send({
+                'type':'rCallMethod',
+                'callId':msg['callId'],
+                'objectId':msg['objectId'],
+                'error': error.toString()
+            }, socket);
+        });
+    }else if(msg['method'] === 'RtcPeerConnection:setLocalDescription'){
+        o = objectStore[msg['objectId']];
+        var localDescription = new webrtc.RTCSessionDescription(msg['args'][0]);
+        o.setLocalDescription(localDescription, function(){
+            send({
+                'type':'rCallMethod',
+                'callId':msg['callId'],
+                'objectId':msg['objectId']
+            }, socket);
+        }, function(error){
+            send({
+                'type':'rCallMethod',
+                'callId':msg['callId'],
+                'objectId':msg['objectId'],
+                'error': error.toString()
+            }, socket);
+        });
+    }else if(msg['method'] === 'RtcPeerConnection:setRemoteDescription'){
+        o = objectStore[msg['objectId']];
+        var remoteDescription = new webrtc.RTCSessionDescription(msg['args'][0]);
+        o.setRemoteDescription(remoteDescription, function(){
+            send({
+                'type':'rCallMethod',
+                'callId':msg['callId'],
+                'objectId':msg['objectId']
+            }, socket);
+        }, function(error){
+            send({
+                'type':'rCallMethod',
+                'callId':msg['callId'],
+                'objectId':msg['objectId'],
+                'error': error.toString()
+            }, socket);
+        });
+    }else if(msg['method'] === 'RtcPeerConnection:createDataChannel'){
+        o = objectStore[msg['objectId']];
+        var dataChannel = o.createDataChannel(msg['args'][0], msg['args'][1]);
+        var dataChannelId = uuid.v4();
+        objectStore[dataChannelId] = dataChannel;
+        attachDataChannelEvents(dataChannelId, dataChannel, socket);
+        send({
+            'type':'rCallMethod',
+            'callId':msg['callId'],
+            'objectId':msg['objectId'],
+            'dataChannelId':dataChannelId,
+            'data' : {
+                'binaryType' : dataChannel.binaryType,
+                'id' : dataChannel.id,
+                'label' : dataChannel.label,
+                'maxRetransmitTime' : dataChannel.maxRetransmitTime,
+                'maxRetransmits' : dataChannel.maxRetransmits,
+                'ordered' : dataChannel.ordered,
+                'protocol' : dataChannel.protocol,
+                'readyState' : dataChannel.readyState,
+                'reliable' : dataChannel.reliable
+            }
+        }, socket);
+
+    }else if(msg['method'] === 'RtcDataChannel:close'){
+        o = objectStore[msg['objectId']];
+        o.close();
+        objectStore.remove(msg['objectId']);
+        send({
+            'type':'rCallMethod',
+            'callId':msg['callId'],
+            'objectId':msg['objectId'],
+            'action' : 'removeReference'
+        }, socket);
+    }else if(msg['method'] === 'RtcDataChannel:setBinaryType'){
+        o = objectStore[msg['objectId']];
+        o.binaryType = msg['args'][0];
+        send({
+            'type':'rCallMethod',
+            'callId':msg['callId'],
+            'objectId':msg['objectId']
+        }, socket);
+    }else if(msg['method'] === 'RtcDataChannel:getReadyState'){
+        o = objectStore[msg['objectId']];
+        send({
+            'type':'rCallMethod',
+            'callId':msg['callId'],
+            'objectId':msg['objectId'],
+            'data' : o.readyState
+        }, socket);
+    }else if(msg['method'] === 'RtcDataChannel:send'){
+        o = objectStore[msg['objectId']];
+	o.send(msg['args'][0]['sdata']);
+    }
+}
+
+
+function sessionDescriptionToMap(sessionDescription){
+    return {
+        'type' : sessionDescription.type,
+        'sdp' : sessionDescription.sdp
+    };
+}
+
+function attachPeerConnectionEvents(objectId, pc, socket){
+    pc.oniceconnectionstatechange = function(event) {
+        send({
+            'type': 'event',
+            'objectId': objectId,
+            'event': 'onIceConnectionStateChange',
+            'data': pc.iceConnectionState
+        }, socket);
+    };
+
+    pc.onicegatheringstatechange = function(event) {
+        send({
+            'type': 'event',
+            'objectId': objectId,
+            'event': 'onIceGatheringStateChange',
+            'data': pc.iceGatheringState
+        }, socket);
+    };
+
+    pc.onsignalingstatechange = function(event) {
+        send({
+            'type': 'event',
+            'objectId': objectId,
+            'event': 'onSignalingStateChange',
+            'data': pc.signalingState
+        }, socket);
+    };
+
+    pc.onicecandidate = function(event) {
+        if(event.candidate == null)
+            return;
+        send({
+            'type': 'event',
+            'objectId': objectId,
+            'event': 'onIceCandidate',
+            'data': {
+                'candidate' : event.candidate.candidate,
+                'sdpMid' :    event.candidate.sdpMid,
+                'sdpMLineIndex': event.candidate.sdpMLineIndex
+            }
+        }, socket);
+    };
+
+    pc.ondatachannel = function(event){
+        var dataChannelId = uuid.v4();
+        objectStore[dataChannelId] = event.channel;
+        attachDataChannelEvents(dataChannelId, event.channel, socket);
+        send({
+            'type':'event',
+            'event':'onDataChannel',
+            'objectId' : objectId,
+            'dataChannelId':dataChannelId,
+            'data' : {
+                'binaryType' : event.channel.binaryType,
+                'id' : event.channel.id,
+                'label' : event.channel.label,
+                'maxRetransmitTime' : event.channel.maxRetransmitTime,
+                'maxRetransmits' : event.channel.maxRetransmits,
+                'ordered' : event.channel.ordered,
+                'protocol' : event.channel.protocol,
+                'readyState' : event.channel.readyState,
+                'reliable' : event.channel.reliable
+            }
+        }, socket);
+    };
+}
+
+function attachDataChannelEvents(objectId, datachannel, socket){
+    datachannel.onopen = function(){
+        console.log("ONOPEN");
+        send({
+            'type': 'event',
+            'objectId': objectId,
+            'event': 'onOpen'
+        }, socket);
+    };
+
+    datachannel.onmessage = function(event) {
+        console.log("ONMESSAGE");
+        var data = event.data;
+        if('string' == typeof data) {
+            send({
+                'type': 'event',
+                'objectId': objectId,
+                'event': 'onMessage',
+                'sdata': data
+            }, socket);
+        } else {
+            var d = btoa(String.fromCharCode.apply(null, new Uint8Array(data)));
+            console.log('onmessage:', d);
+            send({
+                'type': 'event',
+                'objectId': objectId,
+                'event': 'onMessage',
+                'b64data': d
+            }, socket);
+        }
+    };
+
+    datachannel.onclose = function(event) {
+        console.log("ONCLOSE");
+        send({
+            'type': 'event',
+            'objectId': objectId,
+            'event': 'onClose'
+        }, socket);
+    };
+
+    datachannel.onerror = function(event){
+        console.log("ONERROR");
+        send({
+            'type': 'event',
+            'objectId': objectId,
+            'event': 'onError',
+            'data': event.toString()
+        }, socket);
+    };
+}
